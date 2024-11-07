@@ -9,47 +9,26 @@ def build_phrase_dict(data, phrase_only=True):
     # expects 2-dimensional data
     current_int = 2 # we reserve 1 for the start symbol and 0 for padding
     phrase_dict = {}
-    if phrase_only:
-        for line in data:
-            for phrase in line:
-                if phrase[0] not in phrase_dict:
-                    phrase_dict[phrase[0]] = current_int
-                    current_int += 1
-    else:
-        for line in data:
-            for phrase in line:
-                if phrase not in phrase_dict:
-                    phrase_dict[phrase] = current_int
-                    current_int += 1
+    for line in data:
+        for phrase in line:
+            if phrase not in phrase_dict:
+                phrase_dict[phrase] = current_int
+                current_int += 1
 
     return phrase_dict
 
-
-def data_to_tensor(data, int_dict, phrase_only=True):
-    if phrase_only:
-        input_data_as_int = []
-        output_data_as_int = []
-        for line in data:
-            input_line_as_int = [1] # let 1 be our start symbol
-            output_line_as_int = []
-            for phrase in line:
-                input_line_as_int.append(int_dict[phrase[0]])
-                output_line_as_int.append(int_dict[phrase[0]])
-            output_line_as_int.append(1) # also use 1 as end symbol
-            input_data_as_int.append(torch.LongTensor(input_line_as_int))
-            output_data_as_int.append(torch.LongTensor(output_line_as_int))
-    else:
-        input_data_as_int = []
-        output_data_as_int = []
-        for line in data:
-            input_line_as_int = [1]  # let 1 be our start symbol
-            output_line_as_int = []
-            for phrase in line:
-                input_line_as_int.append(int_dict[phrase])
-                output_line_as_int.append(int_dict[phrase])
-            output_line_as_int.append(1)
-            input_data_as_int.append(torch.LongTensor(input_line_as_int))
-            output_data_as_int.append(torch.LongTensor(output_line_as_int))
+def data_to_tensor(data, int_dict):
+    input_data_as_int = []
+    output_data_as_int = []
+    for line in data:
+        input_line_as_int = [1] # let 1 be our start symbol
+        output_line_as_int = []
+        for phrase in line:
+            input_line_as_int.append(int_dict[phrase])
+            output_line_as_int.append(int_dict[phrase])
+        output_line_as_int.append(1) # also use 1 as end symbol
+        input_data_as_int.append(torch.LongTensor(input_line_as_int))
+        output_data_as_int.append(torch.LongTensor(output_line_as_int))
 
     input_as_tensor = torch.LongTensor(torch.nn.utils.rnn.pad_sequence(input_data_as_int)).T # convert to tensor and make batch first
     output_as_tensor = torch.LongTensor(torch.nn.utils.rnn.pad_sequence(output_data_as_int)).T
@@ -81,8 +60,20 @@ def train_model(input, output, mask, print_every, lr, epochs, embedding_dim, bat
 
     # tracking training loss and held out loss
     d = []
-    # l_train_loss = []
-    # l_held_out_loss = []
+
+    model.eval()
+    with torch.no_grad():
+        held_out_embeds = embedding(held_out_input)
+        held_out_out, _ = model(held_out_embeds)
+        held_out_loss = loss_func(held_out_out[held_out_mask], held_out_target[held_out_mask])
+
+    d.append({"learning_rate":lr, "epoch":0, 
+                "embedding_dim":embedding_dim, "batch_size":batch_size,
+                "training_loss":"NA", 
+                "held_out_loss":held_out_loss.item()})
+    # measuring held_out loss before training to see the starting place
+
+
     for epoch in range(epochs):
         total_train_loss = 0  # Track training loss for each epoch
         
@@ -118,11 +109,10 @@ def train_model(input, output, mask, print_every, lr, epochs, embedding_dim, bat
         
         # l_train_loss.append(avg_train_loss)
         # l_held_out_loss.append(held_out_loss.item())
-        d.append({"learning_rate":lr, "epoch":epoch, 
+        d.append({"learning_rate":lr, "epoch":epoch+1, 
                   "embedding_dim":embedding_dim, "batch_size":batch_size,
                   "training_loss":avg_train_loss, 
                   "held_out_loss":held_out_loss.item()})
-        ## TODO create a pandas df and append each row with parameters values and the loss item 
 
     return embedding, model, d
 
@@ -131,10 +121,13 @@ def train_model(input, output, mask, print_every, lr, epochs, embedding_dim, bat
 file_path = 'flat_paths.txt'
 
 with open(file_path, 'r') as file:
-    lines = file.readlines()
-    lines = [line.split() for line in lines][:-1]
-    lines = [[(word.split('_')[0], word.split('_')[1]) for word in line] for line in lines]
+    lines = [[(word.split('_')[0], word.split('_')[1]) for word in line.split()] for line in file]
 
+seqs_nolex = []
+seqs_lex = []
+for seq in lines:
+    seqs_nolex.append([tuple[0] for tuple in seq])
+    seqs_lex.append([item for tup in seq for item in tup])
 
 # training and test split
 index = round(len(lines)*0.8)
@@ -142,8 +135,8 @@ index = round(len(lines)*0.8)
 # phrase_dict = build_phrase_dict(lines, phrase_only=False) # builds a mapping from phrases to integers
 # input, output, mask = data_to_tensor(lines, phrase_dict, phrase_only=False) # convert to tensors for training
 
-phrase_dict = build_phrase_dict(lines) # builds a mapping from phrases to integers
-input, output, mask = data_to_tensor(lines, phrase_dict) # convert to tensors for training
+phrase_dict = build_phrase_dict(seqs_lex) # builds a mapping from phrases to integers
+input, output, mask = data_to_tensor(seqs_lex, phrase_dict) # convert to tensors for training
 
 
 
@@ -156,8 +149,8 @@ input, output, mask = data_to_tensor(lines, phrase_dict) # convert to tensors fo
 #     'epochs': [10, 50, 100, 300]
 # }
 hyperparameters = {
-    'embedding_dim': [3, 7, 20],
-    'learning_rate': [0.001, 0.1],
+    'embedding_dim': [3, 7],
+    'learning_rate': [0.1],
     'batch_size': [50, 300],
     'epochs': [10]
 }
@@ -182,7 +175,8 @@ for params in param_combinations:
     # Print the current combination (for tracking)
     print(f"Testing combination: {param_dict}")
 
-    lstm_args = {'input_size': embedding_dim, 'hidden_size': 7, 'batch_first': True}
+    lstm_args = {'input_size': embedding_dim, 'hidden_size': 343, 'batch_first': True}
+    # hidden_size will be length of phrase_dict + 2 (the number of unique words plus start and padding symbol)
 
     # Run train_model and capture the final embedding and model
     embedding, model, result = train_model(
@@ -204,9 +198,8 @@ for params in param_combinations:
 print(len(results))
 print(results[0])
 df = pd.DataFrame(results)
-df.to_csv('test_results.csv', index=False)
+# df.to_csv('test_results.csv', index=False)
 
-print(df)
 
 # # Display or analyze results
 # with open("hyperparam_test.txt", 'w') as file:
